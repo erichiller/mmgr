@@ -276,14 +276,14 @@ per_file_loop:
 		//defer fh.Close()
 		// get a checksum -- tag.Sum -- see tag/Sum.go func Sum() only does a checksum of media part of the file, that is the part after the tag, thus the checksum should stay constant despite changes to the tag of the file. The purpose for this is to create a STATIC UNIQUE IDENTIFIER for the file that is consistent across time.
 		checksum, err := tag.Sum(fh)
-		if err != nil {
+		if err = rewind(fh, err); err != nil {
 			p.ERROR.Println("FAILED CHECKSUM READ: [file skipped] " + err.Error() + fullpath)
 			C_INVALID++
 			continue per_file_loop
 		}
 		// read the id tags
 		t, err := tag.ReadFrom(fh)
-		if err != nil {
+		if err = rewind(fh, err); err != nil {
 			p.ERROR.Println("FAILED TAG READ: [file skipped] " + err.Error() + fullpath)
 			C_INVALID++
 			continue per_file_loop
@@ -366,11 +366,14 @@ per_file_loop:
 			panic(err)
 		}
 	}
+	p.INFO.Println("ScanDir( )-->")
+	p.INFO.Printf("Sending %v tracks", len(tracks))
+	p.INFO.Printf("Sending %v files", len(uploadFiles))
 	return
 }
 func scanDb() (tracks []*googm.Track, uploadFiles []*os.File) {
 	var count int
-	if err := DB.QueryRow("select count(*) as total from files where modtime > IFNULL(googmtime,0) LIMIT 10").Scan(&count); err != nil {
+	if err := DB.QueryRow("select count(*) as total from files where modtime > IFNULL(googmtime,0)").Scan(&count); err != nil {
 		switch {
 		case err == sql.ErrNoRows:
 			p.INFO.Println("No changes found: error: " + err.Error())
@@ -381,7 +384,7 @@ func scanDb() (tracks []*googm.Track, uploadFiles []*os.File) {
 	}
 	p.MSG.Println("Starting to load from Db:")
 	progress := pb.StartNew(count)
-	rows, err := DB.Query("select fullpath from files where modtime > IFNULL(googmtime,0) LIMIT 10")
+	rows, err := DB.Query("select fullpath from files where modtime > IFNULL(googmtime,0)")
 	if err != nil {
 		p.ERROR.Println("select failed; " + err.Error())
 		panic(err)
@@ -391,21 +394,21 @@ func scanDb() (tracks []*googm.Track, uploadFiles []*os.File) {
 	p.INFO.Printf("%-15v %-35v %-15v %-15v %2v/%-6v\n","ClientId","Title","Album","Artist","##","T#","")
 	db_scan_loop:
 	for rows.Next(){
-		progress.Increment()
+		if !VERBOSE { progress.Increment() }			// show a progress bar; else it shows per file details.
 		err := rows.Scan(&fullpath)
 		if err != nil {
 			panic(err)
 		}
 		fh, err := os.Open(fullpath)
 		checksum, err := tag.Sum(fh)
-		if err != nil {
+		if err = rewind(fh, err); err != nil {
 			p.ERROR.Println("FAILED CHECKSUM READ: [file skipped] " + err.Error() + fullpath)
 			C_INVALID++
 			continue db_scan_loop
 		}
 
 		t, err := tag.ReadFrom(fh)
-		if err != nil {
+		if err = rewind(fh, err); err != nil {
 			p.ERROR.Println("FAILED TAG READ: [file skipped] " + fullpath + " with error: " + err.Error())
 			C_INVALID++
 			continue db_scan_loop
@@ -476,7 +479,7 @@ func shouldFileUpload(fullpath string) bool {
 			return false
 		}
 	}
-	p.TRACE.Printf("%s -> compare modtime: %i to googmtime: %i \n", fullpath, modtime, googmtime)
+	p.TRACE.Printf("%v -> compare modtime: %v to googmtime: %v \n", fullpath, modtime, googmtime)
 	if !googmtime.Valid {
 		return true // update - never been uploaded to google!
 	} else if modtime > googmtime.Int64 {
@@ -503,7 +506,6 @@ func openDB() {
 		p.ERROR.Println("Database failure: " + err.Error())
 		panic(err)
 	}
-
 }
 
 func loadGoogm() (*googm.Client, error) {
@@ -566,4 +568,12 @@ at the end of the authorization process below.
 	}
 	p.MSG.Println("registration successful\n")
 	return nil
+}
+
+func rewind(s io.Seeker, err error) error {
+	_, err1 := s.Seek(0, os.SEEK_SET)
+	if err == nil {
+		err = err1
+	}
+	return err
 }

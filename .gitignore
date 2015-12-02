@@ -1,0 +1,5 @@
+*.db
+*.DB
+*.exe
+*.log
+*.json
